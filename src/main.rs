@@ -12,8 +12,8 @@ struct Cli {
     command: Option<Commands>,
 
     /// Root directory of the hardhat project
-    #[arg(short = 'r', long = "root", default_value = ".")]
-    root: PathBuf,
+    #[arg(short = 'p', long = "project", default_value = ".")]
+    project: PathBuf,
 }
 
 #[derive(Subcommand)]
@@ -46,7 +46,7 @@ fn main() {
     let cli = Cli::parse();
     
     // Validate the hardhat project first
-    if let Err(e) = validate_hardhat_project(&cli.root) {
+    if let Err(e) = validate_hardhat_project(&cli.project) {
         eprintln!("Error: {}", e);
         std::process::exit(1);
     }
@@ -58,7 +58,7 @@ fn main() {
         Some(cmd) => {
             match cmd {
                 Commands::Count => {
-                    match count_deployments(&cli.root) {
+                    match count_deployments(&cli.project) {
                         Ok(count) => println!("Found {} deployment(s)", count),
                         Err(e) => {
                             eprintln!("Error counting deployments: {}", e);
