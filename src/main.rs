@@ -33,14 +33,15 @@ enum Commands {
         #[arg(short = 'a', long = "aggregate")]
         aggregate: bool,
         /// Output in JSON format
-        #[arg(short = 'j', long = "json", conflicts_with = "csv")]
+        #[arg(short = 'j', long = "json", conflicts_with = "csv", group = "output_format")]
         json: bool,
         /// Output in CSV format
-        #[arg(short = 'c', long = "csv", conflicts_with = "json")]
+        #[arg(short = 'c', long = "csv", conflicts_with = "json", group = "output_format")]
         csv: bool,
         /// Output file (only valid with --json or --csv)
-        #[arg(short = 'o', long = "outfile", requires = "json")]
+        #[arg(short = 'o', long = "outfile", requires = "output_format")]
         outfile: Option<PathBuf>,
+ 
     },
 }
 
