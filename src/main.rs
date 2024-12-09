@@ -10,7 +10,7 @@ use prettytable::format;
 use std::process::Command;
 use reqwest;
 
-const VERSION: &str = "0.1.0";
+const VERSION: &str = "0.1.1";
 
 #[derive(Parser)]
 #[command(name = "evm-deployment-info")]
@@ -387,6 +387,8 @@ fn list_deployments(root: &Path, aggregate: bool, json: bool, csv: bool, outfile
                 }
                 table.printstd();
             } else {
+                println!("Found {} deployment(s):", found_deployments.len());
+                
                 let mut table = Table::new();
                 table.set_format(create_sui_style_format());
                 table.add_row(row![bF-> "Network", bF-> "Address"]);
