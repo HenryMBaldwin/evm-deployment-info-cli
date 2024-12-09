@@ -5,6 +5,8 @@ use std::collections::HashMap;
 use std::fs;
 use regex::Regex;
 use prettytable::{Table, row};
+use std::collections::BTreeMap;
+use prettytable::format;
 
 const VERSION: &str = "0.1.0";
 
@@ -26,7 +28,11 @@ enum Commands {
     /// Count the number of deployments
     Count,
     /// List all deployments and their addresses
-    List,
+    List {
+        /// Aggregate networks with common prefixes
+        #[arg(short = 'a', long = "aggregate")]
+        aggregate: bool,
+    },
 }
 
 fn validate_hardhat_project(root: &Path) -> Result<(), String> {
@@ -101,7 +107,7 @@ fn get_deployment_address(deployment_dir: &Path) -> Result<Option<String>, Strin
         .map(String::from))
 }
 
-fn list_deployments(root: &Path) -> Result<(), String> {
+fn list_deployments(root: &Path, aggregate: bool) -> Result<(), String> {
     let networks = parse_hardhat_config(root)?;
     let deployments_dir = root.join("deployments");
     
@@ -126,28 +132,115 @@ fn list_deployments(root: &Path) -> Result<(), String> {
         }
     }
 
-    found_deployments.sort_by(|a, b| a.0.cmp(&b.0));
-    missing_deployments.sort();
-
     if !found_deployments.is_empty() {
         println!("Found {} deployment(s):", found_deployments.len());
-        let mut table = Table::new();
-        table.add_row(row!["Network", "Address"]);
-        for (network, address) in found_deployments {
-            table.add_row(row![camel_to_title_case(&network), address]);
+        
+        if aggregate {
+            let mut grouped: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
+            for (network, address) in found_deployments {
+                let parts: Vec<&str> = network.split(|c: char| c.is_uppercase()).collect();
+                let prefix = parts[0].to_string();
+                let suffix = network[prefix.len()..].to_string();
+                
+                let suffix = if suffix.is_empty() {
+                    "Mainnet".to_string()
+                } else {
+                    suffix
+                };
+                
+                grouped.entry(prefix)
+                    .or_default()
+                    .push((suffix, address));
+            }
+
+            let mut table = Table::new();
+            table.add_row(row![bF-> "Network", bF-> "Address"]);
+
+            for (prefix, mut networks) in grouped {
+                networks.sort_by(|a, b| {
+                    if a.0 == "Mainnet" {
+                        std::cmp::Ordering::Less
+                    } else if b.0 == "Mainnet" {
+                        std::cmp::Ordering::Greater
+                    } else {
+                        a.0.cmp(&b.0)
+                    }
+                });
+                
+                table.add_row(row![bF-> format!("{}:", camel_to_title_case(&prefix)), ""]);
+                
+                for (suffix, address) in networks {
+                    table.add_row(row![
+                        format!("  {}", camel_to_title_case(&suffix)),
+                        address
+                    ]);
+                }
+            }
+            table.printstd();
+        } else {
+            let mut table = Table::new();
+            table.add_row(row![bF-> "Network", bF-> "Address"]);
+            
+            found_deployments.sort_by(|a, b| a.0.cmp(&b.0));
+            for (network, address) in found_deployments {
+                table.add_row(row![camel_to_title_case(&network), address]);
+            }
+            table.printstd();
         }
-        table.printstd();
     }
 
     if !missing_deployments.is_empty() {
         println!("\nFound the following {} chain(s) in hardhat config without corresponding deployment(s):",
             missing_deployments.len());
-        let mut table = Table::new();
-        table.add_row(row!["Network"]);
-        for network in missing_deployments {
-            table.add_row(row![camel_to_title_case(&network)]);
+        
+        if aggregate {
+            let mut grouped: BTreeMap<String, Vec<String>> = BTreeMap::new();
+            for network in missing_deployments {
+                let parts: Vec<&str> = network.split(|c: char| c.is_uppercase()).collect();
+                let prefix = parts[0].to_string();
+                let suffix = network[prefix.len()..].to_string();
+                
+                let suffix = if suffix.is_empty() {
+                    "Mainnet".to_string()
+                } else {
+                    suffix
+                };
+                
+                grouped.entry(prefix)
+                    .or_default()
+                    .push(suffix);
+            }
+
+            let mut table = Table::new();
+            table.add_row(row![bF-> "Network"]);
+
+            for (prefix, mut networks) in grouped {
+                networks.sort_by(|a, b| {
+                    if a == "Mainnet" {
+                        std::cmp::Ordering::Less
+                    } else if b == "Mainnet" {
+                        std::cmp::Ordering::Greater
+                    } else {
+                        a.cmp(b)
+                    }
+                });
+                
+                table.add_row(row![bF-> format!("{}:", camel_to_title_case(&prefix))]);
+                for suffix in networks {
+                    table.add_row(row![format!("  {}", camel_to_title_case(&suffix))]);
+                }
+            }
+            table.printstd();
+        } else {
+            let mut table = Table::new();
+            table.add_row(row![bF-> "Network"]);
+            
+            missing_deployments.sort();
+            for network in missing_deployments {
+                table.add_row(row![camel_to_title_case(&network)]);
+            }
+            table.printstd();
         }
-        table.printstd();
     }
 
     Ok(())
@@ -169,7 +262,7 @@ fn main() {
             let result = match cmd {
                 Commands::Count => count_deployments(&cli.project)
                     .map(|count| println!("Found {} deployment(s)", count)),
-                Commands::List => list_deployments(&cli.project),
+                Commands::List { aggregate } => list_deployments(&cli.project, aggregate),
             };
 
             if let Err(e) = result {
