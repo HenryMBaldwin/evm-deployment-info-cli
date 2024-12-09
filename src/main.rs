@@ -38,6 +38,9 @@ enum Commands {
         /// Output in CSV format
         #[arg(short = 'c', long = "csv", conflicts_with = "json")]
         csv: bool,
+        /// Output file (only valid with --json or --csv)
+        #[arg(short = 'o', long = "outfile", requires = "json")]
+        outfile: Option<PathBuf>,
     },
 }
 
@@ -134,7 +137,7 @@ fn create_sui_style_format() -> prettytable::format::TableFormat {
     format
 }
 
-fn list_deployments(root: &Path, aggregate: bool, json: bool, csv: bool) -> Result<(), String> {
+fn list_deployments(root: &Path, aggregate: bool, json: bool, csv: bool, outfile: Option<&Path>) -> Result<(), String> {
     let networks = parse_hardhat_config(root)?;
     let deployments_dir = root.join("deployments");
     
@@ -223,9 +226,17 @@ fn list_deployments(root: &Path, aggregate: bool, json: bool, csv: bool) -> Resu
             }
         }
 
-        println!("{}", serde_json::to_string_pretty(&output).map_err(|e| e.to_string())?);
+        let output = serde_json::to_string_pretty(&output).map_err(|e| e.to_string())?;
+        if let Some(path) = outfile {
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).map_err(|e| format!("Failed to create directory: {}", e))?;
+            }
+            fs::write(path, output).map_err(|e| format!("Failed to write to file: {}", e))?;
+        } else {
+            println!("{}", output);
+        }
     } else if csv {
-        println!("Network,Address");
+        let mut csv_content = String::from("Network,Address\n");
         if aggregate {
             let mut grouped: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
             for (network, address) in found_deployments {
@@ -256,16 +267,16 @@ fn list_deployments(root: &Path, aggregate: bool, json: bool, csv: bool) -> Resu
                 });
                 
                 for (suffix, address) in networks {
-                    println!("{} {},{}",
+                    csv_content.push_str(&format!("{} {},{}\n",
                         camel_to_title_case(&prefix),
                         camel_to_title_case(&suffix),
                         address
-                    );
+                    ));
                 }
             }
 
             if !missing_deployments.is_empty() {
-                println!("\nMissing Networks");
+                csv_content.push_str("\nMissing Networks\n");
                 for network in missing_deployments {
                     let parts: Vec<&str> = network.split(|c: char| c.is_uppercase()).collect();
                     let prefix = parts[0].to_string();
@@ -277,23 +288,29 @@ fn list_deployments(root: &Path, aggregate: bool, json: bool, csv: bool) -> Resu
                         suffix
                     };
                     
-                    println!("{} {},",
+                    csv_content.push_str(&format!("{} {},",
                         camel_to_title_case(&prefix),
                         camel_to_title_case(&suffix)
-                    );
+                    ));
                 }
             }
         } else {
             for (network, address) in found_deployments {
-                println!("{},{}", camel_to_title_case(&network), address);
+                csv_content.push_str(&format!("{},{}\n", camel_to_title_case(&network), address));
             }
             
             if !missing_deployments.is_empty() {
-                println!("\nMissing Networks");
+                csv_content.push_str("\nMissing Networks\n");
                 for network in missing_deployments {
-                    println!("{},", camel_to_title_case(&network));
+                    csv_content.push_str(&format!("{},", camel_to_title_case(&network)));
                 }
             }
+        }
+
+        if let Some(path) = outfile {
+            fs::write(path, csv_content).map_err(|e| format!("Failed to write to file: {}", e))?;
+        } else {
+            print!("{}", csv_content);
         }
     } else {
         if !found_deployments.is_empty() {
@@ -431,7 +448,9 @@ fn main() {
             let result = match cmd {
                 Commands::Count => count_deployments(&cli.project)
                     .map(|count| println!("Found {} deployment(s)", count)),
-                Commands::List { aggregate, json, csv } => list_deployments(&cli.project, aggregate, json, csv),
+                Commands::List { aggregate, json, csv, outfile, .. } => {
+                    list_deployments(&cli.project, aggregate, json, csv, outfile.as_deref())
+                }
             };
 
             if let Err(e) = result {
