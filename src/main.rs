@@ -41,7 +41,18 @@ enum Commands {
         /// Output file (only valid with --json or --csv)
         #[arg(short = 'o', long = "outfile", requires = "output_format")]
         outfile: Option<PathBuf>,
- 
+    },
+    /// Audit deployments and config entries
+    Audit {
+        /// Output in JSON format
+        #[arg(short = 'j', long = "json", conflicts_with = "csv", group = "output_format")]
+        json: bool,
+        /// Output in CSV format
+        #[arg(short = 'c', long = "csv", conflicts_with = "json", group = "output_format")]
+        csv: bool,
+        /// Output file (only valid with --json or --csv)
+        #[arg(short = 'o', long = "outfile", requires = "output_format")]
+        outfile: Option<PathBuf>,
     },
 }
 
@@ -433,6 +444,123 @@ fn list_deployments(root: &Path, aggregate: bool, json: bool, csv: bool, outfile
     Ok(())
 }
 
+fn audit_deployments(root: &Path, json: bool, csv: bool, outfile: Option<&Path>) -> Result<(), String> {
+    let networks = parse_hardhat_config(root)?;
+    let deployments_dir = root.join("deployments");
+    
+    let mut config_without_deployment = Vec::new();
+    let mut deployment_without_config = Vec::new();
+
+    // Check for configs without deployments
+    for (network_name, chain_id) in &networks {
+        if network_name == "hardhat" {
+            continue;
+        }
+        let chain_dir = deployments_dir.join(format!("chain-{}", chain_id));
+        if !chain_dir.exists() || get_deployment_address(&chain_dir)?.is_none() {
+            config_without_deployment.push((network_name.clone(), *chain_id));
+        }
+    }
+
+    // Check for deployments without configs
+    if deployments_dir.exists() {
+        for entry in fs::read_dir(&deployments_dir).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let path = entry.path();
+            if path.is_dir() {
+                if let Some(dir_name) = path.file_name().and_then(|n| n.to_str()) {
+                    if let Some(chain_id) = dir_name.strip_prefix("chain-") {
+                        if let Ok(chain_id) = chain_id.parse::<u64>() {
+                            if !networks.values().any(|&id| id == chain_id) {
+                                deployment_without_config.push(chain_id);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if json {
+        let mut output = serde_json::Map::new();
+        output.insert(
+            "config_without_deployment".to_string(),
+            serde_json::json!(config_without_deployment
+                .iter()
+                .map(|(name, id)| {
+                    serde_json::json!({
+                        "network": name,
+                        "chain_id": id
+                    })
+                })
+                .collect::<Vec<_>>())
+        );
+        output.insert(
+            "deployment_without_config".to_string(),
+            serde_json::json!(deployment_without_config)
+        );
+
+        let output = serde_json::to_string_pretty(&output).map_err(|e| e.to_string())?;
+        if let Some(path) = outfile {
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).map_err(|e| format!("Failed to create directory: {}", e))?;
+            }
+            fs::write(path, output).map_err(|e| format!("Failed to write to file: {}", e))?;
+        } else {
+            println!("{}", output);
+        }
+    } else if csv {
+        let mut csv_content = String::new();
+        
+        csv_content.push_str("Configs Without Deployments\nNetwork,Chain ID\n");
+        for (name, id) in &config_without_deployment {
+            csv_content.push_str(&format!("{},{}\n", name, id));
+        }
+        
+        csv_content.push_str("\nDeployments Without Configs\nChain ID\n");
+        for id in &deployment_without_config {
+            csv_content.push_str(&format!("{}\n", id));
+        }
+
+        if let Some(path) = outfile {
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).map_err(|e| format!("Failed to create directory: {}", e))?;
+            }
+            fs::write(path, csv_content).map_err(|e| format!("Failed to write to file: {}", e))?;
+        } else {
+            print!("{}", csv_content);
+        }
+    } else {
+        if !config_without_deployment.is_empty() {
+            println!("\nFound {} network(s) in config without deployments:", config_without_deployment.len());
+            let mut table = Table::new();
+            table.set_format(create_sui_style_format());
+            table.add_row(row![bF-> "Network", bF-> "Chain ID"]);
+            for (name, id) in config_without_deployment {
+                table.add_row(row![name, id]);
+            }
+            table.printstd();
+        }
+
+        if !deployment_without_config.is_empty() {
+            println!("\nFound {} deployment(s) without config entries:", deployment_without_config.len());
+            let mut table = Table::new();
+            table.set_format(create_sui_style_format());
+            table.add_row(row![bF-> "Chain ID", bF-> "Chain List"]);
+            
+            for id in deployment_without_config {
+                table.add_row(row![
+                    id,
+                    Fb-> format!("https://chainlist.org/chain/{}", id)
+                ]);
+            }
+            table.printstd();
+        }
+    }
+
+    Ok(())
+}
+
 fn main() {
     let cli = Cli::parse();
     
@@ -449,8 +577,11 @@ fn main() {
             let result = match cmd {
                 Commands::Count => count_deployments(&cli.project)
                     .map(|count| println!("Found {} deployment(s)", count)),
-                Commands::List { aggregate, json, csv, outfile, .. } => {
+                Commands::List { aggregate, json, csv, outfile } => {
                     list_deployments(&cli.project, aggregate, json, csv, outfile.as_deref())
+                }
+                Commands::Audit { json, csv, outfile } => {
+                    audit_deployments(&cli.project, json, csv, outfile.as_deref())
                 }
             };
 
