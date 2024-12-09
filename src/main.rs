@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::fs;
 use regex::Regex;
@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 use prettytable::format;
 use std::process::Command;
 use reqwest;
+use std::collections::HashSet;
 
 const VERSION: &str = "0.1.1";
 
@@ -65,6 +66,18 @@ enum Commands {
         /// Force update without version check
         #[arg(short = 'f', long = "force")]
         force: bool,
+    },
+    /// Analyze mainnet vs testnet deployment coverage
+    Coverage {
+        /// Output in JSON format
+        #[arg(short = 'j', long = "json", conflicts_with = "csv", group = "output_format")]
+        json: bool,
+        /// Output in CSV format
+        #[arg(short = 'c', long = "csv", conflicts_with = "json", group = "output_format")]
+        csv: bool,
+        /// Output file (only valid with --json or --csv)
+        #[arg(short = 'o', long = "outfile", requires = "output_format")]
+        outfile: Option<PathBuf>,
     },
 }
 
@@ -621,6 +634,143 @@ fn check_install_permissions() -> bool {
     }
 }
 
+fn coverage_deployments(root: &Path, json: bool, csv: bool, outfile: Option<&Path>) -> Result<(), String> {
+    let networks = parse_hardhat_config(root)?;
+    let deployments_dir = root.join("deployments");
+    
+    // Group deployments by ecosystem
+    let mut ecosystems: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
+    
+    for (network_name, chain_id) in networks {
+        if network_name == "hardhat" {
+            continue;
+        }
+
+        let chain_dir = deployments_dir.join(format!("chain-{}", chain_id));
+        if let Ok(Some(address)) = get_deployment_address(&chain_dir) {
+            let parts: Vec<&str> = network_name.split(|c: char| c.is_uppercase()).collect();
+            let prefix = parts[0].to_string();
+            let suffix = network_name[prefix.len()..].to_string();
+            
+            let suffix = if suffix.is_empty() {
+                "Mainnet".to_string()
+            } else {
+                suffix
+            };
+            
+            ecosystems
+                .entry(prefix)
+                .or_default()
+                .insert(suffix, address);
+        }
+    }
+
+    let total_ecosystems = ecosystems.len();
+    let mut mainnet_only = Vec::new();
+    let mut testnet_only = Vec::new();
+    let mut both = HashSet::new();
+
+    for (ecosystem, deployments) in &ecosystems {
+        let has_mainnet = deployments.contains_key("Mainnet");
+        let has_testnet = deployments.iter().any(|(k, _)| k != "Mainnet");
+
+        if has_mainnet && !has_testnet {
+            mainnet_only.push(ecosystem.clone());
+        } else if !has_mainnet && has_testnet {
+            testnet_only.push(ecosystem.clone());
+        } else if has_mainnet && has_testnet {
+            both.insert(ecosystem.clone());
+        }
+    }
+
+    let mainnet_coverage = (mainnet_only.len() + both.len()) as f64 / total_ecosystems as f64 * 100.0;
+    let testnet_coverage = (testnet_only.len() + both.len()) as f64 / total_ecosystems as f64 * 100.0;
+
+    if json {
+        let mut output = serde_json::Map::new();
+        output.insert("total_ecosystems".to_string(), json!(total_ecosystems));
+        output.insert("mainnet_only".to_string(), json!(mainnet_only));
+        output.insert("testnet_only".to_string(), json!(testnet_only));
+        output.insert("both".to_string(), json!(both));
+        output.insert("mainnet_coverage".to_string(), json!(mainnet_coverage));
+        output.insert("testnet_coverage".to_string(), json!(testnet_coverage));
+
+        let output = serde_json::to_string_pretty(&output).map_err(|e| e.to_string())?;
+        if let Some(path) = outfile {
+            fs::write(path, output).map_err(|e| format!("Failed to write to file: {}", e))?;
+        } else {
+            println!("{}", output);
+        }
+    } else if csv {
+        let mut csv_content = String::from("Category,Network\n");
+        
+        for ecosystem in &mainnet_only {
+            csv_content.push_str(&format!("Mainnet Only,{}\n", camel_to_title_case(ecosystem)));
+        }
+        
+        for ecosystem in &testnet_only {
+            csv_content.push_str(&format!("Testnet Only,{}\n", camel_to_title_case(ecosystem)));
+        }
+        
+        for ecosystem in &both {
+            csv_content.push_str(&format!("Both,{}\n", camel_to_title_case(ecosystem)));
+        }
+
+        csv_content.push_str(&format!("\nCoverage Statistics\n"));
+        csv_content.push_str(&format!("Metric,Percentage\n"));
+        csv_content.push_str(&format!("Mainnet Coverage,{:.1}%\n", mainnet_coverage));
+        csv_content.push_str(&format!("Testnet Coverage,{:.1}%\n", testnet_coverage));
+
+        if let Some(path) = outfile {
+            fs::write(path, csv_content).map_err(|e| format!("Failed to write to file: {}", e))?;
+        } else {
+            print!("{}", csv_content);
+        }
+    } else {
+        println!("Found {} ecosystem(s)\n", total_ecosystems);
+
+        if !mainnet_only.is_empty() {
+            println!("{} ecosystem(s) have mainnet but no testnet deployments:", mainnet_only.len());
+            let mut table = Table::new();
+            table.set_format(create_sui_style_format());
+            table.add_row(row![bF-> "Network"]);
+            for ecosystem in mainnet_only {
+                table.add_row(row![camel_to_title_case(&ecosystem)]);
+            }
+            table.printstd();
+            println!();
+        }
+
+        if !testnet_only.is_empty() {
+            println!("{} ecosystem(s) have testnet but no mainnet deployments:", testnet_only.len());
+            let mut table = Table::new();
+            table.set_format(create_sui_style_format());
+            table.add_row(row![bF-> "Network"]);
+            for ecosystem in testnet_only {
+                table.add_row(row![camel_to_title_case(&ecosystem)]);
+            }
+            table.printstd();
+            println!();
+        }
+
+        println!("Coverage Statistics:");
+        let mut table = Table::new();
+        table.set_format(create_sui_style_format());
+        table.add_row(row![bF-> "Metric", bF-> "Coverage"]);
+        table.add_row(row![
+            "Mainnet Coverage",
+            format!("{:.1}%", mainnet_coverage)
+        ]);
+        table.add_row(row![
+            "Testnet Coverage",
+            format!("{:.1}%", testnet_coverage)
+        ]);
+        table.printstd();
+    }
+
+    Ok(())
+}
+
 fn main() {
     let cli = Cli::parse();
     
@@ -630,7 +780,7 @@ fn main() {
         }
         Some(cmd) => {
             // Handle version and update commands before project validation
-            match cmd {
+            let result = match cmd {
                 Commands::Version => {
                     println!("evm-deployment-info v{}", VERSION);
                     return;
@@ -693,16 +843,6 @@ fn main() {
                         }
                     }
                 }
-                _ => {
-                    // Validate hardhat project for all other commands
-                    if let Err(e) = validate_hardhat_project(&cli.project) {
-                        eprintln!("Error: {}", e);
-                        std::process::exit(1);
-                    }
-                }
-            }
-
-            let result = match cmd {
                 Commands::Count => count_deployments(&cli.project)
                     .map(|count| println!("Found {} deployment(s)", count)),
                 Commands::List { aggregate, json, csv, outfile } => {
@@ -712,8 +852,10 @@ fn main() {
                     audit_deployments(&cli.project, json, csv, outfile.as_deref())
                 }
                 Commands::Version | Commands::Update { .. } => Ok(()),
+                Commands::Coverage { json, csv, outfile } => {
+                    coverage_deployments(&cli.project, json, csv, outfile.as_deref())
+                }
             };
-
             if let Err(e) = result {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);

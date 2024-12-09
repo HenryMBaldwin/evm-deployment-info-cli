@@ -72,6 +72,14 @@ Audit the deployments in the config and deployments directory. Checks if either 
 evm-deployment-info audit
 ```
 
+### Coverage
+
+Analyze mainnet vs testnet deployment coverage for existing deployments.
+
+```bash
+evm-deployment-info coverage
+```
+
 ### Version 
 
 Check the version of the CLI.
