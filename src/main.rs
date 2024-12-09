@@ -107,6 +107,27 @@ fn get_deployment_address(deployment_dir: &Path) -> Result<Option<String>, Strin
         .map(String::from))
 }
 
+fn create_sui_style_format() -> prettytable::format::TableFormat {
+    let format = format::FormatBuilder::new()
+        .column_separator('│')
+        .borders('│')
+        .separator(
+            format::LinePosition::Top,
+            format::LineSeparator::new('─', '┬', '╭', '╮'),
+        )
+        .separator(
+            format::LinePosition::Bottom,
+            format::LineSeparator::new('─', '┴', '╰', '╯'),
+        )
+        .separator(
+            format::LinePosition::Intern,
+            format::LineSeparator::new('─', '┼', '├', '┤'),
+        )
+        .padding(1, 1)
+        .build();
+    format
+}
+
 fn list_deployments(root: &Path, aggregate: bool) -> Result<(), String> {
     let networks = parse_hardhat_config(root)?;
     let deployments_dir = root.join("deployments");
@@ -154,6 +175,7 @@ fn list_deployments(root: &Path, aggregate: bool) -> Result<(), String> {
             }
 
             let mut table = Table::new();
+            table.set_format(create_sui_style_format());
             table.add_row(row![bF-> "Network", bF-> "Address"]);
 
             for (prefix, mut networks) in grouped {
@@ -179,6 +201,7 @@ fn list_deployments(root: &Path, aggregate: bool) -> Result<(), String> {
             table.printstd();
         } else {
             let mut table = Table::new();
+            table.set_format(create_sui_style_format());
             table.add_row(row![bF-> "Network", bF-> "Address"]);
             
             found_deployments.sort_by(|a, b| a.0.cmp(&b.0));
@@ -212,6 +235,7 @@ fn list_deployments(root: &Path, aggregate: bool) -> Result<(), String> {
             }
 
             let mut table = Table::new();
+            table.set_format(create_sui_style_format());
             table.add_row(row![bF-> "Network"]);
 
             for (prefix, mut networks) in grouped {
@@ -233,6 +257,7 @@ fn list_deployments(root: &Path, aggregate: bool) -> Result<(), String> {
             table.printstd();
         } else {
             let mut table = Table::new();
+            table.set_format(create_sui_style_format());
             table.add_row(row![bF-> "Network"]);
             
             missing_deployments.sort();
