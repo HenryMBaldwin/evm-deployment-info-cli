@@ -32,6 +32,9 @@ enum Commands {
         /// Aggregate networks with common prefixes
         #[arg(short = 'a', long = "aggregate")]
         aggregate: bool,
+        /// Output in JSON format
+        #[arg(short = 'j', long = "json")]
+        json: bool,
     },
 }
 
@@ -128,7 +131,7 @@ fn create_sui_style_format() -> prettytable::format::TableFormat {
     format
 }
 
-fn list_deployments(root: &Path, aggregate: bool) -> Result<(), String> {
+fn list_deployments(root: &Path, aggregate: bool, json: bool) -> Result<(), String> {
     let networks = parse_hardhat_config(root)?;
     let deployments_dir = root.join("deployments");
     
@@ -153,118 +156,185 @@ fn list_deployments(root: &Path, aggregate: bool) -> Result<(), String> {
         }
     }
 
-    if !found_deployments.is_empty() {
-        println!("Found {} deployment(s):", found_deployments.len());
+    if json {
+        let mut output = serde_json::Map::new();
         
-        if aggregate {
-            let mut grouped: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
-            for (network, address) in found_deployments {
-                let parts: Vec<&str> = network.split(|c: char| c.is_uppercase()).collect();
-                let prefix = parts[0].to_string();
-                let suffix = network[prefix.len()..].to_string();
-                
-                let suffix = if suffix.is_empty() {
-                    "Mainnet".to_string()
-                } else {
-                    suffix
-                };
-                
-                grouped.entry(prefix)
-                    .or_default()
-                    .push((suffix, address));
-            }
-
-            let mut table = Table::new();
-            table.set_format(create_sui_style_format());
-            table.add_row(row![bF-> "Network", bF-> "Address"]);
-
-            for (prefix, mut networks) in grouped {
-                networks.sort_by(|a, b| {
-                    if a.0 == "Mainnet" {
-                        std::cmp::Ordering::Less
-                    } else if b.0 == "Mainnet" {
-                        std::cmp::Ordering::Greater
+        if !found_deployments.is_empty() {
+            if aggregate {
+                let mut grouped = serde_json::Map::new();
+                for (network, address) in found_deployments {
+                    let parts: Vec<&str> = network.split(|c: char| c.is_uppercase()).collect();
+                    let prefix = parts[0].to_string();
+                    let suffix = network[prefix.len()..].to_string();
+                    
+                    let suffix = if suffix.is_empty() {
+                        "Mainnet".to_string()
                     } else {
-                        a.0.cmp(&b.0)
+                        suffix
+                    };
+                    
+                    let entry = grouped.entry(prefix).or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+                    if let Some(obj) = entry.as_object_mut() {
+                        obj.insert(suffix, serde_json::Value::String(address));
                     }
-                });
-                
-                table.add_row(row![bF-> format!("{}:", camel_to_title_case(&prefix)), ""]);
-                
-                for (suffix, address) in networks {
-                    table.add_row(row![
-                        format!("  {}", camel_to_title_case(&suffix)),
-                        address
-                    ]);
                 }
+                output.insert("deployments".to_string(), serde_json::Value::Object(grouped));
+            } else {
+                let mut deployments = serde_json::Map::new();
+                for (network, address) in found_deployments {
+                    deployments.insert(network, serde_json::Value::String(address));
+                }
+                output.insert("deployments".to_string(), serde_json::Value::Object(deployments));
             }
-            table.printstd();
-        } else {
-            let mut table = Table::new();
-            table.set_format(create_sui_style_format());
-            table.add_row(row![bF-> "Network", bF-> "Address"]);
-            
-            found_deployments.sort_by(|a, b| a.0.cmp(&b.0));
-            for (network, address) in found_deployments {
-                table.add_row(row![camel_to_title_case(&network), address]);
-            }
-            table.printstd();
         }
-    }
 
-    if !missing_deployments.is_empty() {
-        println!("\nFound the following {} chain(s) in hardhat config without corresponding deployment(s):",
-            missing_deployments.len());
-        
-        if aggregate {
-            let mut grouped: BTreeMap<String, Vec<String>> = BTreeMap::new();
-            for network in missing_deployments {
-                let parts: Vec<&str> = network.split(|c: char| c.is_uppercase()).collect();
-                let prefix = parts[0].to_string();
-                let suffix = network[prefix.len()..].to_string();
-                
-                let suffix = if suffix.is_empty() {
-                    "Mainnet".to_string()
-                } else {
-                    suffix
-                };
-                
-                grouped.entry(prefix)
-                    .or_default()
-                    .push(suffix);
-            }
-
-            let mut table = Table::new();
-            table.set_format(create_sui_style_format());
-            table.add_row(row![bF-> "Network"]);
-
-            for (prefix, mut networks) in grouped {
-                networks.sort_by(|a, b| {
-                    if a == "Mainnet" {
-                        std::cmp::Ordering::Less
-                    } else if b == "Mainnet" {
-                        std::cmp::Ordering::Greater
+        if !missing_deployments.is_empty() {
+            if aggregate {
+                let mut grouped = serde_json::Map::new();
+                for network in missing_deployments {
+                    let parts: Vec<&str> = network.split(|c: char| c.is_uppercase()).collect();
+                    let prefix = parts[0].to_string();
+                    let suffix = network[prefix.len()..].to_string();
+                    
+                    let suffix = if suffix.is_empty() {
+                        "Mainnet".to_string()
                     } else {
-                        a.cmp(b)
+                        suffix
+                    };
+                    
+                    let entry = grouped.entry(prefix).or_insert_with(|| serde_json::Value::Array(Vec::new()));
+                    if let Some(arr) = entry.as_array_mut() {
+                        arr.push(serde_json::Value::String(suffix));
                     }
-                });
-                
-                table.add_row(row![bF-> format!("{}:", camel_to_title_case(&prefix))]);
-                for suffix in networks {
-                    table.add_row(row![format!("  {}", camel_to_title_case(&suffix))]);
                 }
+                output.insert("missing".to_string(), serde_json::Value::Object(grouped));
+            } else {
+                output.insert(
+                    "missing".to_string(),
+                    serde_json::Value::Array(
+                        missing_deployments.into_iter()
+                            .map(serde_json::Value::String)
+                            .collect()
+                    )
+                );
             }
-            table.printstd();
-        } else {
-            let mut table = Table::new();
-            table.set_format(create_sui_style_format());
-            table.add_row(row![bF-> "Network"]);
+        }
+
+        println!("{}", serde_json::to_string_pretty(&output).map_err(|e| e.to_string())?);
+    } else {
+        if !found_deployments.is_empty() {
+            println!("Found {} deployment(s):", found_deployments.len());
             
-            missing_deployments.sort();
-            for network in missing_deployments {
-                table.add_row(row![camel_to_title_case(&network)]);
+            if aggregate {
+                let mut grouped: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
+                for (network, address) in found_deployments {
+                    let parts: Vec<&str> = network.split(|c: char| c.is_uppercase()).collect();
+                    let prefix = parts[0].to_string();
+                    let suffix = network[prefix.len()..].to_string();
+                    
+                    let suffix = if suffix.is_empty() {
+                        "Mainnet".to_string()
+                    } else {
+                        suffix
+                    };
+                    
+                    grouped.entry(prefix)
+                        .or_default()
+                        .push((suffix, address));
+                }
+
+                let mut table = Table::new();
+                table.set_format(create_sui_style_format());
+                table.add_row(row![bF-> "Network", bF-> "Address"]);
+
+                for (prefix, mut networks) in grouped {
+                    networks.sort_by(|a, b| {
+                        if a.0 == "Mainnet" {
+                            std::cmp::Ordering::Less
+                        } else if b.0 == "Mainnet" {
+                            std::cmp::Ordering::Greater
+                        } else {
+                            a.0.cmp(&b.0)
+                        }
+                    });
+                    
+                    table.add_row(row![bF-> format!("{}:", camel_to_title_case(&prefix)), ""]);
+                    
+                    for (suffix, address) in networks {
+                        table.add_row(row![
+                            format!("  {}", camel_to_title_case(&suffix)),
+                            address
+                        ]);
+                    }
+                }
+                table.printstd();
+            } else {
+                let mut table = Table::new();
+                table.set_format(create_sui_style_format());
+                table.add_row(row![bF-> "Network", bF-> "Address"]);
+                
+                found_deployments.sort_by(|a, b| a.0.cmp(&b.0));
+                for (network, address) in found_deployments {
+                    table.add_row(row![camel_to_title_case(&network), address]);
+                }
+                table.printstd();
             }
-            table.printstd();
+        }
+
+        if !missing_deployments.is_empty() {
+            println!("\nFound the following {} chain(s) in hardhat config without corresponding deployment(s):",
+                missing_deployments.len());
+            
+            if aggregate {
+                let mut grouped: BTreeMap<String, Vec<String>> = BTreeMap::new();
+                for network in missing_deployments {
+                    let parts: Vec<&str> = network.split(|c: char| c.is_uppercase()).collect();
+                    let prefix = parts[0].to_string();
+                    let suffix = network[prefix.len()..].to_string();
+                    
+                    let suffix = if suffix.is_empty() {
+                        "Mainnet".to_string()
+                    } else {
+                        suffix
+                    };
+                    
+                    grouped.entry(prefix)
+                        .or_default()
+                        .push(suffix);
+                }
+
+                let mut table = Table::new();
+                table.set_format(create_sui_style_format());
+                table.add_row(row![bF-> "Network"]);
+
+                for (prefix, mut networks) in grouped {
+                    networks.sort_by(|a, b| {
+                        if a == "Mainnet" {
+                            std::cmp::Ordering::Less
+                        } else if b == "Mainnet" {
+                            std::cmp::Ordering::Greater
+                        } else {
+                            a.cmp(b)
+                        }
+                    });
+                    
+                    table.add_row(row![bF-> format!("{}:", camel_to_title_case(&prefix))]);
+                    for suffix in networks {
+                        table.add_row(row![format!("  {}", camel_to_title_case(&suffix))]);
+                    }
+                }
+                table.printstd();
+            } else {
+                let mut table = Table::new();
+                table.set_format(create_sui_style_format());
+                table.add_row(row![bF-> "Network"]);
+                
+                missing_deployments.sort();
+                for network in missing_deployments {
+                    table.add_row(row![camel_to_title_case(&network)]);
+                }
+                table.printstd();
+            }
         }
     }
 
@@ -287,7 +357,7 @@ fn main() {
             let result = match cmd {
                 Commands::Count => count_deployments(&cli.project)
                     .map(|count| println!("Found {} deployment(s)", count)),
-                Commands::List { aggregate } => list_deployments(&cli.project, aggregate),
+                Commands::List { aggregate, json } => list_deployments(&cli.project, aggregate, json),
             };
 
             if let Err(e) = result {
