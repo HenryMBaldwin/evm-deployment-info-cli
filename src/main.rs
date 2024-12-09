@@ -7,6 +7,8 @@ use regex::Regex;
 use prettytable::{Table, row};
 use std::collections::BTreeMap;
 use prettytable::format;
+use std::process::Command;
+use reqwest;
 
 const VERSION: &str = "0.1.0";
 
@@ -25,7 +27,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Count the number of deployments
+    /// Count the number of deployments in the deployments directory
     Count,
     /// List all deployments and their addresses
     List {
@@ -53,6 +55,16 @@ enum Commands {
         /// Output file (only valid with --json or --csv)
         #[arg(short = 'o', long = "outfile", requires = "output_format")]
         outfile: Option<PathBuf>,
+    },
+    /// Display version information
+    Version,
+    
+    /// Check for updates and install the latest version
+    #[command(aliases = ["upgrade"])]
+    Update {
+        /// Force update without version check
+        #[arg(short = 'f', long = "force")]
+        force: bool,
     },
 }
 
@@ -326,11 +338,9 @@ fn list_deployments(root: &Path, aggregate: bool, json: bool, csv: bool, outfile
         }
     } else {
         if !found_deployments.is_empty() {
-            println!("Found {} deployment(s):", found_deployments.len());
-            
             if aggregate {
                 let mut grouped: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
-                for (network, address) in found_deployments {
+                for (network, address) in found_deployments.clone() {
                     let parts: Vec<&str> = network.split(|c: char| c.is_uppercase()).collect();
                     let prefix = parts[0].to_string();
                     let suffix = network[prefix.len()..].to_string();
@@ -345,6 +355,11 @@ fn list_deployments(root: &Path, aggregate: bool, json: bool, csv: bool, outfile
                         .or_default()
                         .push((suffix, address));
                 }
+
+                println!("Found {} Ecosystem(s) for a total of {} deployment(s):", 
+                    grouped.len(),
+                    found_deployments.len()
+                );
 
                 let mut table = Table::new();
                 table.set_format(create_sui_style_format());
@@ -561,19 +576,130 @@ fn audit_deployments(root: &Path, json: bool, csv: bool, outfile: Option<&Path>)
     Ok(())
 }
 
+fn get_latest_version() -> Result<String, String> {
+    let client = reqwest::blocking::Client::builder()
+        .user_agent("evm-deployment-info-cli")
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+
+    let response = client
+        .get("https://api.github.com/repos/HenryMBaldwin/evm-deployment-info-cli/releases/latest")
+        .send()
+        .map_err(|e| format!("Failed to check for updates: {}", e))?;
+    
+    if !response.status().is_success() {
+        return Err("Failed to get latest version information".to_string());
+    }
+
+    let release: serde_json::Value = response.json()
+        .map_err(|e| format!("Failed to parse response: {}", e))?;
+    
+    release["tag_name"]
+        .as_str()
+        .map(|v| v.trim_start_matches('v').to_string())
+        .ok_or_else(|| "Invalid version format in response".to_string())
+}
+
+fn check_install_permissions() -> bool {
+    let install_path = Path::new("/usr/local/bin");
+    match fs::metadata(install_path) {
+        Ok(metadata) => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+                let uid = unsafe { libc::getuid() };
+                metadata.uid() == uid || uid == 0
+            }
+            #[cfg(not(unix))]
+            {
+                true
+            }
+        }
+        Err(_) => false,
+    }
+}
+
 fn main() {
     let cli = Cli::parse();
     
-    if let Err(e) = validate_hardhat_project(&cli.project) {
-        eprintln!("Error: {}", e);
-        std::process::exit(1);
-    }
-
     match cli.command {
         None => {
             println!("No command provided. Use --help to see available commands.");
         }
         Some(cmd) => {
+            // Handle version and update commands before project validation
+            match cmd {
+                Commands::Version => {
+                    println!("evm-deployment-info v{}", VERSION);
+                    return;
+                }
+                Commands::Update { force } => {
+                    println!("Checking for updates...");
+                    
+                    match get_latest_version() {
+                        Ok(latest_version) => {
+                            if !force && latest_version == VERSION {
+                                println!("You're already running the latest version ({})", VERSION);
+                                return ();
+                            }
+                            
+                            println!("Current version: {}", VERSION);
+                            println!("Latest version:  {}", latest_version);
+                            
+                            if !force && latest_version < VERSION.to_string() {
+                                println!("Warning: Latest version is older than current version");
+                                println!("Use --force to update anyway");
+                                return ();
+                            }
+
+                            if !check_install_permissions() {
+                                println!("Error: Insufficient permissions to perform update");
+                                println!("Please run with sudo:");
+                                println!("\n    sudo evm-deployment-info update\n");
+                                return ();
+                            }
+                            
+                            println!("Installing update...");
+                            
+                            let install_cmd = r#"
+                                curl -fsSL https://raw.githubusercontent.com/HenryMBaldwin/evm-deployment-info-cli/refs/heads/master/install.sh | sudo bash
+                            "#;
+                            
+                            match Command::new("sh")
+                                .arg("-c")
+                                .arg(install_cmd)
+                                .status() 
+                            {
+                                Ok(status) => {
+                                    if status.success() {
+                                        println!("Successfully updated to version {}", latest_version);
+                                        return ();
+                                    } else {
+                                        println!("Failed to update. Please try again or update manually");
+                                        return ();
+                                    }
+                                }
+                                Err(e) => {
+                                    println!("Error during update: {}", e);
+                                    return ();
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            println!("Error checking for updates: {}", e);
+                            return ();
+                        }
+                    }
+                }
+                _ => {
+                    // Validate hardhat project for all other commands
+                    if let Err(e) = validate_hardhat_project(&cli.project) {
+                        eprintln!("Error: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+            }
+
             let result = match cmd {
                 Commands::Count => count_deployments(&cli.project)
                     .map(|count| println!("Found {} deployment(s)", count)),
@@ -583,6 +709,7 @@ fn main() {
                 Commands::Audit { json, csv, outfile } => {
                     audit_deployments(&cli.project, json, csv, outfile.as_deref())
                 }
+                Commands::Version | Commands::Update { .. } => Ok(()),
             };
 
             if let Err(e) = result {
