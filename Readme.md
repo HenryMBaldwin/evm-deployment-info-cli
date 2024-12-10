@@ -59,7 +59,7 @@ evm-deployment-info list
 
 options:
 
-- `--aggregate` - Aggregate networks with common prefixes (e.g. `Ethereum` and `Ethereum Sepolia` will be aggregated into `Ethereum`)
+- `--aggregate` - Aggregate networks with common prefixes (e.g. `Ethereum` and `Ethereum Sepolia` will be aggregated as sub-items under `Ethereum`)
 - `--json` - Output in JSON format
 - `--csv` - Output in CSV format
 - `--outfile` - Output to a file, must be used with `--json` or `--csv`
