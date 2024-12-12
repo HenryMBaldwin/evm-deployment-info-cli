@@ -11,7 +11,7 @@ use std::process::Command;
 use reqwest;
 use std::collections::HashSet;
 
-const VERSION: &str = "0.1.2";
+const VERSION: &str = "0.1.3";
 
 #[derive(Parser)]
 #[command(name = "evm-deployment-info")]
@@ -36,12 +36,15 @@ enum Commands {
         #[arg(short = 'a', long = "aggregate")]
         aggregate: bool,
         /// Output in JSON format
-        #[arg(short = 'j', long = "json", conflicts_with = "csv", group = "output_format")]
+        #[arg(short = 'j', long = "json", conflicts_with = "csv", conflicts_with = "md", group = "output_format")]
         json: bool,
         /// Output in CSV format
-        #[arg(short = 'c', long = "csv", conflicts_with = "json", group = "output_format")]
+        #[arg(short = 'c', long = "csv", conflicts_with = "json", conflicts_with = "md", group = "output_format")]
         csv: bool,
-        /// Output file (only valid with --json or --csv)
+        /// Output in Markdown table format
+        #[arg(short = 'm', long = "md", conflicts_with = "json", conflicts_with = "csv", group = "output_format")]
+        md: bool,
+        /// Output file (only valid with --json, --csv, or --md)
         #[arg(short = 'o', long = "outfile", requires = "output_format")]
         outfile: Option<PathBuf>,
     },
@@ -174,7 +177,7 @@ fn create_sui_style_format() -> prettytable::format::TableFormat {
     format
 }
 
-fn list_deployments(root: &Path, aggregate: bool, json: bool, csv: bool, outfile: Option<&Path>) -> Result<(), String> {
+fn list_deployments(root: &Path, aggregate: bool, json: bool, csv: bool, md: bool, outfile: Option<&Path>) -> Result<(), String> {
     let networks = parse_hardhat_config(root)?;
     let deployments_dir = root.join("deployments");
     
@@ -348,6 +351,127 @@ fn list_deployments(root: &Path, aggregate: bool, json: bool, csv: bool, outfile
             fs::write(path, csv_content).map_err(|e| format!("Failed to write to file: {}", e))?;
         } else {
             print!("{}", csv_content);
+        }
+    } else if md {
+        let mut md_content = String::new();
+        
+        if !found_deployments.is_empty() {
+            if aggregate {
+                let mut grouped: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
+                for (network, address) in found_deployments.clone() {
+                    let parts: Vec<&str> = network.split(|c: char| c.is_uppercase()).collect();
+                    let prefix = parts[0].to_string();
+                    let suffix = network[prefix.len()..].to_string();
+                    
+                    let suffix = if suffix.is_empty() {
+                        "Mainnet".to_string()
+                    } else {
+                        suffix
+                    };
+                    
+                    grouped.entry(prefix)
+                        .or_default()
+                        .push((suffix, address));
+                }
+
+                md_content.push_str(&format!("Found {} Ecosystem(s) for a total of {} deployment(s):\n\n", 
+                    grouped.len(),
+                    found_deployments.len()
+                ));
+
+                for (prefix, mut networks) in grouped {
+                    networks.sort_by(|a, b| {
+                        if a.0 == "Mainnet" {
+                            std::cmp::Ordering::Less
+                        } else if b.0 == "Mainnet" {
+                            std::cmp::Ordering::Greater
+                        } else {
+                            a.0.cmp(&b.0)
+                        }
+                    });
+                    
+                    md_content.push_str(&format!("# {}\n\n", camel_to_title_case(&prefix)));
+                    md_content.push_str("| Network | Address |\n|---------|----------|\n");
+                    
+                    for (suffix, address) in networks {
+                        md_content.push_str(&format!("| {} | `{}` |\n",
+                            camel_to_title_case(&suffix),
+                            address
+                        ));
+                    }
+                    md_content.push_str("\n");
+                }
+            } else {
+                md_content.push_str(&format!("Found {} deployment(s):\n\n", found_deployments.len()));
+                md_content.push_str("| Network | Address |\n|---------|----------|\n");
+                
+                let mut sorted_deployments = found_deployments.clone();
+                sorted_deployments.sort_by(|a, b| a.0.cmp(&b.0));
+                for (network, address) in sorted_deployments {
+                    md_content.push_str(&format!("| {} | `{}` |\n",
+                        camel_to_title_case(&network),
+                        address
+                    ));
+                }
+                md_content.push_str("\n");
+            }
+        }
+
+        if !missing_deployments.is_empty() {
+            md_content.push_str(&format!("\n### Missing Deployments\n\nFound the following {} chain(s) in hardhat config without corresponding deployment(s):\n\n",
+                missing_deployments.len()));
+            
+            if aggregate {
+                let mut grouped: BTreeMap<String, Vec<String>> = BTreeMap::new();
+                for network in missing_deployments {
+                    let parts: Vec<&str> = network.split(|c: char| c.is_uppercase()).collect();
+                    let prefix = parts[0].to_string();
+                    let suffix = network[prefix.len()..].to_string();
+                    
+                    let suffix = if suffix.is_empty() {
+                        "Mainnet".to_string()
+                    } else {
+                        suffix
+                    };
+                    
+                    grouped.entry(prefix)
+                        .or_default()
+                        .push(suffix);
+                }
+
+                for (prefix, mut networks) in grouped {
+                    networks.sort_by(|a, b| {
+                        if a == "Mainnet" {
+                            std::cmp::Ordering::Less
+                        } else if b == "Mainnet" {
+                            std::cmp::Ordering::Greater
+                        } else {
+                            a.cmp(b)
+                        }
+                    });
+                    
+                    md_content.push_str(&format!("#### {}\n\n", camel_to_title_case(&prefix)));
+                    md_content.push_str("| Network |\n|---------|\n");
+                    for suffix in networks {
+                        md_content.push_str(&format!("| {} |\n", camel_to_title_case(&suffix)));
+                    }
+                    md_content.push_str("\n");
+                }
+            } else {
+                md_content.push_str("| Network |\n|---------|\n");
+                let mut sorted_missing = missing_deployments.clone();
+                sorted_missing.sort();
+                for network in sorted_missing {
+                    md_content.push_str(&format!("| {} |\n", camel_to_title_case(&network)));
+                }
+                md_content.push_str("\n");
+            }
+        }
+
+        if let Some(path) = outfile {
+            fs::write(path, md_content).map_err(|e| format!("Failed to write to file: {}", e))?;
+        } else {
+            print!("{}", md_content);
         }
     } else {
         if !found_deployments.is_empty() {
@@ -845,8 +969,8 @@ fn main() {
                 }
                 Commands::Count => count_deployments(&cli.project)
                     .map(|count| println!("Found {} deployment(s)", count)),
-                Commands::List { aggregate, json, csv, outfile } => {
-                    list_deployments(&cli.project, aggregate, json, csv, outfile.as_deref())
+                Commands::List { aggregate, json, csv, md, outfile } => {
+                    list_deployments(&cli.project, aggregate, json, csv, md, outfile.as_deref())
                 }
                 Commands::Audit { json, csv, outfile } => {
                     audit_deployments(&cli.project, json, csv, outfile.as_deref())
