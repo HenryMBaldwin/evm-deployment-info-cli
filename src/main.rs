@@ -11,7 +11,7 @@ use std::process::Command;
 use reqwest;
 use std::collections::HashSet;
 
-const VERSION: &str = "0.1.3";
+const VERSION: &str = "0.1.4";
 
 #[derive(Parser)]
 #[command(name = "evm-deployment-info")]
@@ -276,7 +276,7 @@ fn list_deployments(root: &Path, aggregate: bool, json: bool, csv: bool, md: boo
             println!("{}", output);
         }
     } else if csv {
-        let mut csv_content = String::from("Network,Address\n");
+        let mut csv_content = String::from("Chain,Network,Address\n");
         if aggregate {
             let mut grouped: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
             for (network, address) in found_deployments {
@@ -307,7 +307,7 @@ fn list_deployments(root: &Path, aggregate: bool, json: bool, csv: bool, md: boo
                 });
                 
                 for (suffix, address) in networks {
-                    csv_content.push_str(&format!("{} {},{}\n",
+                    csv_content.push_str(&format!("{},{},{}\n",
                         camel_to_title_case(&prefix),
                         camel_to_title_case(&suffix),
                         address
@@ -316,7 +316,7 @@ fn list_deployments(root: &Path, aggregate: bool, json: bool, csv: bool, md: boo
             }
 
             if !missing_deployments.is_empty() {
-                csv_content.push_str("\nMissing Networks\n");
+                csv_content.push_str("\nMissing Networks\nChain,Network\n");
                 for network in missing_deployments {
                     let parts: Vec<&str> = network.split(|c: char| c.is_uppercase()).collect();
                     let prefix = parts[0].to_string();
@@ -328,7 +328,7 @@ fn list_deployments(root: &Path, aggregate: bool, json: bool, csv: bool, md: boo
                         suffix
                     };
                     
-                    csv_content.push_str(&format!("{} {},",
+                    csv_content.push_str(&format!("{},{}\n",
                         camel_to_title_case(&prefix),
                         camel_to_title_case(&suffix)
                     ));
@@ -336,13 +336,13 @@ fn list_deployments(root: &Path, aggregate: bool, json: bool, csv: bool, md: boo
             }
         } else {
             for (network, address) in found_deployments {
-                csv_content.push_str(&format!("{},{}\n", camel_to_title_case(&network), address));
+                csv_content.push_str(&format!("{},{},{}\n", camel_to_title_case(&network), network, address));
             }
             
             if !missing_deployments.is_empty() {
-                csv_content.push_str("\nMissing Networks\n");
+                csv_content.push_str("\nMissing Networks\nChain,Network\n");
                 for network in missing_deployments {
-                    csv_content.push_str(&format!("{},", camel_to_title_case(&network)));
+                    csv_content.push_str(&format!("{},{}\n", camel_to_title_case(&network), network));
                 }
             }
         }
